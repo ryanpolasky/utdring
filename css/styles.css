@@ -199,3 +199,9 @@ footer {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
 }
+
+@media (max-width: 1024px) {
+  .hide-on-small {
+    display: none;
+  }
+}
