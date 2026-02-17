@@ -26,7 +26,7 @@
 
 <img width="134" height="54" alt="image" src="https://github.com/user-attachments/assets/f9fd8af8-5c18-42f2-ac59-ebf0df964b26" />
 
-Since every website is unique, we suggest you add your own flair to the lion. We also know that design is hard, so here are some examples to get you started:
+Since every website is unique, we suggest you add your own flair to the UTD emblem. We also know that design is hard, so here are some examples to get you started:
 
 #### HTML:
 
