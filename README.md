@@ -12,7 +12,7 @@
 ## Joining the Webring
 
 1. Add the webring widget to your website HTML ([template below](#widget-template)). Generally, you should add it to the footer.
-2. Fork this repo and add your information to the **BOTTOM** of `webringData[]` in `index.html` following this format:
+2. Clone this repo, branch, and add your information to the **BOTTOM** of `webringData[]` in `index.html` following this format:
    ```json
    {
      "name": "Your Name",
