@@ -8,7 +8,7 @@ function seededRandom(seed) {
 
 function getDailySeed() {
   const now = new Date();
-  return now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+  return now.getUTCFullYear() * 10000 + (now.getUTCMonth() + 1) * 100 + now.getUTCDate();
 }
 
 function shuffleWithSeed(array, seed) {
