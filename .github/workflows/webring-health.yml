@@ -1,0 +1,117 @@
+name: Webring Health Check
+
+on:
+  schedule:
+    - cron: "40 13 * * *" # 08:40 America/Chicago, off the hour
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - index.html
+      - scripts/check-webring.mjs
+      - .github/workflows/webring-health.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webring-health-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check member sites
+    runs-on: ubuntu-latest
+    # generous: every request is retried with long backoff so a slow or
+    # rate-limited host gets the benefit of the doubt
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # so a PR can be diffed against its base commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test the checker itself
+        run: node scripts/check-webring.test.mjs
+
+      - name: Check the webring
+        id: check
+        continue-on-error: true
+        env:
+          # only set on pull_request, so PRs check just the sites they add
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: |
+          args=(--report "$RUNNER_TEMP/report.md" --annotate)
+          if [ -n "$BASE_SHA" ]; then
+            args+=(--base-ref "$BASE_SHA")
+          fi
+          node scripts/check-webring.mjs "${args[@]}"
+
+      - name: Note on the PR summary that this is advisory
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo
+            echo "> This check is advisory and never blocks the PR — it's here so you can see the"
+            echo "> new site's widget working before merging."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the tracking issue
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          OUTCOME: ${{ steps.check.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LABEL: webring-health
+          TITLE: "Webring health check: some sites need attention"
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/report.md"
+
+          gh label create "$LABEL" --color D93F0B \
+            --description "Automated webring health check findings" 2>/dev/null || true
+
+          existing=$(gh issue list --label "$LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ "$OUTCOME" != "success" ]; then
+            {
+              echo "Some sites in the ring didn't respond, or their webring links aren't working."
+              echo
+              if [ -f "$report" ]; then
+                cat "$report"
+              else
+                echo "The health check itself failed to run — see [the run log]($RUN_URL)."
+              fi
+              echo
+              echo "---"
+              echo "<sub>Updated automatically by \`.github/workflows/webring-health.yml\` ([latest run]($RUN_URL))."
+              echo "This issue closes itself once every site is healthy again.</sub>"
+            } > "$RUNNER_TEMP/issue.md"
+
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --body-file "$RUNNER_TEMP/issue.md"
+              echo "Updated issue #$existing"
+            else
+              gh issue create --title "$TITLE" --label "$LABEL" --body-file "$RUNNER_TEMP/issue.md"
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --comment "Every site in the ring is healthy again as of [this run]($RUN_URL). Closing automatically."
+            echo "Closed issue #$existing"
+          else
+            echo "All good — nothing to report."
+          fi
+
+      # PRs never fail on this. Scheduled and manual runs go red only when a site
+      # genuinely didn't respond or its links are broken — warnings don't count.
+      - name: Flag real problems
+        if: github.event_name != 'pull_request' && steps.check.outcome != 'success'
+        run: |
+          echo "::error::Some webring sites need attention — see the job summary and the webring-health issue."
+          exit 1

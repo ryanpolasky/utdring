@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "check-webring": "node scripts/check-webring.mjs",
+    "test": "node scripts/check-webring.test.mjs"
+  },
   "devDependencies": {
     "tailwindcss": "^3.4.15"
   }
