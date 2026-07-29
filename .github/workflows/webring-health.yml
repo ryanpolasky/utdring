@@ -1,8 +1,6 @@
 name: Webring Health Check
 
 on:
-  schedule:
-    - cron: "40 13 * * *" # 08:40 America/Chicago, off the hour
   workflow_dispatch:
   pull_request:
     paths:
