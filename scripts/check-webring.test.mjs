@@ -2,7 +2,7 @@
 // route is a member site in some state, paired with the level we expect.
 process.env.WEBRING_RETRY_MS = "0";
 
-import { checkSite, parseWebringData } from "./check-webring.mjs";
+import { checkSite, commentOutSites, parseWebringData } from "./check-webring.mjs";
 import { readFileSync } from "node:fs";
 
 const widget = (frag) => `
@@ -73,6 +73,11 @@ for (const site of sites) {
 
 const real = parseWebringData(readFileSync(new URL("../index.html", import.meta.url), "utf8"));
 check("parse index.html", true, real.length > 0 && real.every((s) => s.name && s.website));
+
+const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const pruned = parseWebringData(commentOutSites(indexHtml, [real[1]]));
+check("prune drops only the failing site", real.length - 1, pruned.length);
+check("prune keeps the others", false, pruned.some((s) => s.website === real[1].website));
 
 if (failed) {
   console.error(`\n❌ ${failed} check(s) failed`);
