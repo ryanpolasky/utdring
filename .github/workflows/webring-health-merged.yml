@@ -1,0 +1,23 @@
+name: Webring Health Removal Merged
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  close-issue:
+    if: github.event.pull_request.merged && github.event.pull_request.head.ref == 'webring-health/remove-failing' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          for n in $(gh issue list --label webring-health --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "Failing sites were removed in #$PR."
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
