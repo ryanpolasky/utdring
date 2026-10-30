@@ -31,9 +31,10 @@ jobs:
       - name: Walk the webring
         id: walk
         continue-on-error: true
-        run: node scripts/check-webring.mjs --report "$RUNNER_TEMP/report.md" --prune
+        run: node scripts/check-webring.mjs --out "$RUNNER_TEMP/health"
 
       - name: Open, update or close the tracking issue
+        id: issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -43,7 +44,7 @@ jobs:
           TITLE: "Webring health: some sites need attention"
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/report.md"
+          report="$RUNNER_TEMP/health/report.md"
 
           gh label create "$LABEL" --color D93F0B \
             --description "Automated webring health check findings" 2>/dev/null || true
@@ -64,51 +65,77 @@ jobs:
             if [ -n "$existing" ]; then
               gh issue edit "$existing" --body-file "$RUNNER_TEMP/issue.md"
             else
-              gh issue create --title "$TITLE" --label "$LABEL" --body-file "$RUNNER_TEMP/issue.md"
+              url=$(gh issue create --title "$TITLE" --label "$LABEL" --body-file "$RUNNER_TEMP/issue.md")
+              existing="${url##*/}"
             fi
+            echo "number=$existing" >> "$GITHUB_OUTPUT"
           elif [ -n "$existing" ]; then
             gh issue close "$existing" --comment "Every site is healthy again as of [this run]($RUN_URL)."
           fi
 
-      - name: Open, update or close the removal PR
+      - name: Open, update or close the removal and restore PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          OUTCOME: ${{ steps.walk.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          BRANCH: webring-health/remove-failing
+          ISSUE: ${{ steps.issue.outputs.number }}
+          BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          existing=$(gh pr list --head "$BRANCH" --state open --limit 1 --json number --jq '.[0].number // empty')
-
-          if [ "$OUTCOME" = "success" ]; then
-            if [ -n "$existing" ]; then
-              gh pr close "$existing" --delete-branch --comment "Every site is healthy again as of [this run]($RUN_URL)."
-            fi
-            exit 0
-          fi
-          git diff --quiet -- index.html && exit 0
-
-          {
-            echo "Temporarily comments the ❌ sites below out of the ring. **Double-check them before merging** — the checker can misread a site. Re-add them by uncommenting their line once the widget is back."
-            echo
-            cat "$RUNNER_TEMP/report.md"
-            echo
-            echo "<sub>Opened by \`.github/workflows/webring-health.yml\` ([latest run]($RUN_URL)). Rebuilt from main daily; closes itself once every site is healthy.</sub>"
-          } > "$RUNNER_TEMP/pr.md"
+          out="$RUNNER_TEMP/health"
+          [ -f "$out/report.md" ] || exit 0
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git commit -qam "Temporarily remove failing sites from the webring"
-          git push -f origin "$BRANCH"
 
-          if [ -n "$existing" ]; then
-            gh pr edit "$existing" --body-file "$RUNNER_TEMP/pr.md"
-          else
-            gh pr create --head "$BRANCH" --base "${{ github.event.repository.default_branch }}" \
-              --title "Webring health: temporarily remove failing sites" --body-file "$RUNNER_TEMP/pr.md" --reviewer ryanpolasky
-          fi
+          # sync_pr <branch> <html> <title> <body file> <close comment>
+          sync_pr() {
+            local branch=$1 html=$2 title=$3 body=$4 gone=$5
+            local existing
+            existing=$(gh pr list --head "$branch" --state open --limit 1 --json number --jq '.[0].number // empty')
+            if [ ! -f "$html" ]; then
+              if [ -n "$existing" ]; then gh pr close "$existing" --delete-branch --comment "$gone"; fi
+              return 0
+            fi
+            git checkout -qB "$branch" "$GITHUB_SHA"
+            cp "$html" index.html
+            if git diff --quiet; then git checkout -q "$GITHUB_SHA"; return 0; fi
+            git commit -qam "$title"
+            git push -qf origin "$branch"
+            git checkout -q "$GITHUB_SHA"
+            if [ -n "$existing" ]; then
+              gh pr edit "$existing" --body-file "$body"
+            else
+              gh pr create --head "$branch" --base "$BASE" --title "$title" --body-file "$body" --reviewer ryanpolasky
+            fi
+          }
+
+          footer="<sub>Opened by \`.github/workflows/webring-health.yml\` ([latest run]($RUN_URL)). Rebuilt from $BASE daily; closes itself when no longer needed.</sub>"
+
+          {
+            echo "Temporarily comments the ❌ sites below out of the ring. **Double-check them before merging**, since the checker can misread a site. They stay on the daily walk, and a restore PR opens once they pass again."
+            [ -n "$ISSUE" ] && { echo; echo "Closes #$ISSUE"; }
+            echo
+            cat "$out/report.md"
+            echo
+            echo "$footer"
+          } > "$RUNNER_TEMP/remove.md"
+          sync_pr webring-health/remove-failing "$out/remove.html" \
+            "Webring health: temporarily remove failing sites" "$RUNNER_TEMP/remove.md" \
+            "Every site is healthy again as of [this run]($RUN_URL)."
+
+          {
+            echo "These previously removed sites pass the health check again, so this puts them back in the ring:"
+            echo
+            [ -f "$out/restore.md" ] && cat "$out/restore.md"
+            echo
+            cat "$out/report.md"
+            echo
+            echo "$footer"
+          } > "$RUNNER_TEMP/restore.md"
+          sync_pr webring-health/restore-recovered "$out/restore.html" \
+            "Webring health: restore recovered sites" "$RUNNER_TEMP/restore.md" \
+            "No removed sites are passing as of [this run]($RUN_URL)."
 
       - name: Fail the run if any site is broken
         if: steps.walk.outcome != 'success'

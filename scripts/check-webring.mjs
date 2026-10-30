@@ -2,11 +2,12 @@
 // Walks the webring: fetches every site in webringData and checks that it's up
 // and still carries a working webring widget. Exit 1 if any site fails.
 //
-//   node scripts/check-webring.mjs [--report out.md] [--prune]
+//   node scripts/check-webring.mjs [--out dir]
 //
-// --prune comments failing sites out of index.html so a PR can drop them from the ring.
+// --out writes report.md, plus remove.html (failing sites commented out) and
+// restore.html/restore.md (previously removed sites that pass again) for the workflow's PRs.
 
-import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -55,13 +56,36 @@ function parseWebringData(html) {
   return data.sites;
 }
 
+const REMOVED = "// [webring-health] ";
+const removedLine = /^(\s*)\/\/ \[webring-health\] (\{.*\})\s*,?\s*$/;
+const websiteOf = (entry) => entry.match(/"website"\s*:\s*"([^"]*)"/)?.[1];
+
+function parseRemovedSites(html) {
+  return html
+    .split("\n")
+    .map((line) => line.match(removedLine)?.[2])
+    .filter(Boolean)
+    .map((entry) => JSON.parse(entry));
+}
+
 function commentOutSites(html, sites) {
   const urls = new Set(sites.map((s) => s.website));
   return html
     .split("\n")
     .map((line) => {
-      const m = line.match(/^(\s*)(\{.*"website"\s*:\s*"([^"]*)".*)$/);
-      return m && urls.has(m[3]) ? `${m[1]}// ${m[2]}` : line;
+      const m = line.match(/^(\s*)(\{.*)$/);
+      return m && urls.has(websiteOf(m[2])) ? `${m[1]}${REMOVED}${m[2]}` : line;
+    })
+    .join("\n");
+}
+
+function restoreSites(html, sites) {
+  const urls = new Set(sites.map((s) => s.website));
+  return html
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^(\s*)\/\/ \[webring-health\] (\{.*)$/);
+      return m && urls.has(websiteOf(m[2])) ? `${m[1]}${m[2]}` : line;
     })
     .join("\n");
 }
@@ -171,7 +195,10 @@ async function checkSite(site, sites) {
 
 const ICON = { ok: "✅", warn: "⚠️", fail: "❌" };
 
-function buildReport(results) {
+const row = (r) =>
+  `| ${ICON[r.level]} | ${r.site.name ?? "?"} | [${formatUrl(r.site.website ?? "")}](${r.site.website ?? ""}) | ${r.status ?? "—"} | ${r.note ?? ""} |`;
+
+function buildReport(results, removed = []) {
   const count = (lvl) => results.filter((r) => r.level === lvl).length;
   const lines = [
     "## Webring health",
@@ -181,37 +208,51 @@ function buildReport(results) {
     "| | Site | URL | HTTP | Note |",
     "| :-: | --- | --- | :-: | --- |",
   ];
-  for (const r of results) {
-    lines.push(
-      `| ${ICON[r.level]} | ${r.site.name ?? "?"} | [${formatUrl(r.site.website ?? "")}](${r.site.website ?? ""}) | ${r.status ?? "—"} | ${r.note ?? ""} |`
-    );
-  }
+  lines.push(...results.map(row));
   lines.push("", "❌ fails the check; ⚠️ is informational. Widget template: [README](https://github.com/ryanpolasky/utdring#widget-template).");
+  if (removed.length) {
+    lines.push("", "### Removed by the health check", "", "Re-checked daily; a ✅ here gets a PR putting it back in the ring.", "", "| | Site | URL | HTTP | Note |", "| :-: | --- | --- | :-: | --- |");
+    lines.push(...removed.map(row));
+  }
   return lines.join("\n");
 }
 
 async function main() {
   const argv = process.argv.slice(2);
-  const reportPath = argv.includes("--report") ? argv[argv.indexOf("--report") + 1] : null;
+  const outDir = argv.includes("--out") ? argv[argv.indexOf("--out") + 1] : null;
 
   const indexPath = path.join(ROOT, "index.html");
   const html = readFileSync(indexPath, "utf8");
   const sites = parseWebringData(html);
-  console.log(`Walking ${sites.length} sites…`);
+  const removedSites = parseRemovedSites(html);
+  const everyone = [...sites, ...removedSites];
+  console.log(`Walking ${sites.length} sites (+${removedSites.length} removed)…`);
 
-  const results = await mapConcurrent(sites, CONCURRENCY, async (site) => {
-    const r = { site, ...(await checkSite(site, sites)) };
-    console.log(`${ICON[r.level]} ${site.name} — ${site.website}${r.status ? ` (HTTP ${r.status})` : ""}${r.note ? `: ${r.note}` : ""}`);
-    return r;
-  });
+  const walk = (list, tag = "") =>
+    mapConcurrent(list, CONCURRENCY, async (site) => {
+      const r = { site, ...(await checkSite(site, everyone)) };
+      console.log(`${ICON[r.level]} ${tag}${site.name} — ${site.website}${r.status ? ` (HTTP ${r.status})` : ""}${r.note ? `: ${r.note}` : ""}`);
+      return r;
+    });
+  const results = await walk(sites);
+  const removed = await walk(removedSites, "[removed] ");
 
-  const report = buildReport(results);
-  if (reportPath) writeFileSync(reportPath, report + "\n");
+  const report = buildReport(results, removed);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + "\n");
 
   const failing = results.filter((r) => r.level === "fail");
-  if (argv.includes("--prune") && failing.length) writeFileSync(indexPath, commentOutSites(html, failing.map((r) => r.site)));
-  console.log(`\n${failing.length ? "❌" : "✅"} ${failing.length} of ${results.length} sites failing.`);
+  const recovered = removed.filter((r) => r.level === "ok");
+  if (outDir) {
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(path.join(outDir, "report.md"), report + "\n");
+    if (failing.length) writeFileSync(path.join(outDir, "remove.html"), commentOutSites(html, failing.map((r) => r.site)));
+    if (recovered.length) {
+      writeFileSync(path.join(outDir, "restore.html"), restoreSites(html, recovered.map((r) => r.site)));
+      const list = recovered.map((r) => `- ${r.site.name} — ${r.site.website}`).join("\n");
+      writeFileSync(path.join(outDir, "restore.md"), list + "\n");
+    }
+  }
+  console.log(`\n${failing.length ? "❌" : "✅"} ${failing.length} of ${results.length} sites failing; ${recovered.length} removed site(s) healthy again.`);
   process.exitCode = failing.length ? 1 : 0;
 }
 
@@ -222,4 +263,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   });
 }
 
-export { parseWebringData, checkSite, commentOutSites, formatUrl, fuzzyMatch };
+export { parseWebringData, parseRemovedSites, checkSite, commentOutSites, restoreSites, formatUrl, fuzzyMatch };
