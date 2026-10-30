@@ -2,7 +2,9 @@
 // Walks the webring: fetches every site in webringData and checks that it's up
 // and still carries a working webring widget. Exit 1 if any site fails.
 //
-//   node scripts/check-webring.mjs [--report out.md]
+//   node scripts/check-webring.mjs [--report out.md] [--prune]
+//
+// --prune comments failing sites out of index.html so a PR can drop them from the ring.
 
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -51,6 +53,17 @@ function parseWebringData(html) {
   const data = JSON.parse(json);
   if (!Array.isArray(data.sites)) throw new Error("webringData.sites is not an array");
   return data.sites;
+}
+
+function commentOutSites(html, sites) {
+  const urls = new Set(sites.map((s) => s.website));
+  return html
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^(\s*)(\{.*"website"\s*:\s*"([^"]*)".*)$/);
+      return m && urls.has(m[3]) ? `${m[1]}// ${m[2]}` : line;
+    })
+    .join("\n");
 }
 
 // --- fetching ---
@@ -181,7 +194,9 @@ async function main() {
   const argv = process.argv.slice(2);
   const reportPath = argv.includes("--report") ? argv[argv.indexOf("--report") + 1] : null;
 
-  const sites = parseWebringData(readFileSync(path.join(ROOT, "index.html"), "utf8"));
+  const indexPath = path.join(ROOT, "index.html");
+  const html = readFileSync(indexPath, "utf8");
+  const sites = parseWebringData(html);
   console.log(`Walking ${sites.length} sites…`);
 
   const results = await mapConcurrent(sites, CONCURRENCY, async (site) => {
@@ -194,9 +209,10 @@ async function main() {
   if (reportPath) writeFileSync(reportPath, report + "\n");
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + "\n");
 
-  const failing = results.filter((r) => r.level === "fail").length;
-  console.log(`\n${failing ? "❌" : "✅"} ${failing} of ${results.length} sites failing.`);
-  process.exitCode = failing ? 1 : 0;
+  const failing = results.filter((r) => r.level === "fail");
+  if (argv.includes("--prune") && failing.length) writeFileSync(indexPath, commentOutSites(html, failing.map((r) => r.site)));
+  console.log(`\n${failing.length ? "❌" : "✅"} ${failing.length} of ${results.length} sites failing.`);
+  process.exitCode = failing.length ? 1 : 0;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -206,4 +222,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   });
 }
 
-export { parseWebringData, checkSite, formatUrl, fuzzyMatch };
+export { parseWebringData, checkSite, commentOutSites, formatUrl, fuzzyMatch };

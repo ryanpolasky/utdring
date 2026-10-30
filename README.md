@@ -72,7 +72,8 @@ If none of these quite work for you, feel free to make your own. If you're using
 A [GitHub Action](./.github/workflows/webring-health.yml) walks the ring every morning: each member site must
 respond, reference the webring, and point its widget at its own entry so prev/next actually go somewhere. Sites that
 render client-side are checked via their JS bundles. Anything broken lands in a single auto-updating issue labelled
-`webring-health`, which closes itself once the ring is healthy again.
+`webring-health`, which closes itself once the ring is healthy again. It also opens (never merges) a PR that comments
+the failing sites out of `index.html`; review it before merging, since the checker can misread a site.
 
 ```bash
 npm run check-webring          # walk every site

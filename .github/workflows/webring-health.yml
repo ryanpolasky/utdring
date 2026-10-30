@@ -6,8 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
+  pull-requests: write
 
 concurrency:
   group: webring-health
@@ -30,7 +31,7 @@ jobs:
       - name: Walk the webring
         id: walk
         continue-on-error: true
-        run: node scripts/check-webring.mjs --report "$RUNNER_TEMP/report.md"
+        run: node scripts/check-webring.mjs --report "$RUNNER_TEMP/report.md" --prune
 
       - name: Open, update or close the tracking issue
         env:
@@ -67,6 +68,46 @@ jobs:
             fi
           elif [ -n "$existing" ]; then
             gh issue close "$existing" --comment "Every site is healthy again as of [this run]($RUN_URL)."
+          fi
+
+      - name: Open, update or close the removal PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          OUTCOME: ${{ steps.walk.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: webring-health/remove-failing
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --head "$BRANCH" --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ "$OUTCOME" = "success" ]; then
+            if [ -n "$existing" ]; then
+              gh pr close "$existing" --delete-branch --comment "Every site is healthy again as of [this run]($RUN_URL)."
+            fi
+            exit 0
+          fi
+          git diff --quiet -- index.html && exit 0
+
+          {
+            echo "Temporarily comments the ❌ sites below out of the ring. **Double-check them before merging** — the checker can misread a site. Re-add them by uncommenting their line once the widget is back."
+            echo
+            cat "$RUNNER_TEMP/report.md"
+            echo
+            echo "<sub>Opened by \`.github/workflows/webring-health.yml\` ([latest run]($RUN_URL)). Rebuilt from main daily; closes itself once every site is healthy.</sub>"
+          } > "$RUNNER_TEMP/pr.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git commit -qam "Temporarily remove failing sites from the webring"
+          git push -f origin "$BRANCH"
+
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body-file "$RUNNER_TEMP/pr.md"
+          else
+            gh pr create --head "$BRANCH" --base "${{ github.event.repository.default_branch }}" \
+              --title "Webring health: temporarily remove failing sites" --body-file "$RUNNER_TEMP/pr.md"
           fi
 
       - name: Fail the run if any site is broken
