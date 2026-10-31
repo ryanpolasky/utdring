@@ -74,14 +74,21 @@ for (const site of sites) {
 const real = parseWebringData(readFileSync(new URL("../index.html", import.meta.url), "utf8"));
 check("parse index.html", true, real.length > 0 && real.every((s) => s.name && s.website));
 
-const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const pruned = parseWebringData(commentOutSites(indexHtml, [real[1]]));
-check("prune drops only the failing site", real.length - 1, pruned.length);
-check("prune keeps the others", false, pruned.some((s) => s.website === real[1].website));
-const prunedHtml = commentOutSites(indexHtml, [real[1]]);
-check("pruned site is tracked as removed", real[1].website, parseRemovedSites(prunedHtml).map((s) => s.website).join());
-check("manual comments aren't tracked", 0, parseRemovedSites(indexHtml).length);
-check("restore round-trips", true, restoreSites(prunedHtml, [real[1]]) === indexHtml);
+const fixture = `const webringData = {
+  "sites": [
+    { "name": "A", "year": 2026, "website": "https://a.test" },
+    { "name": "B", "year": 2027, "website": "https://b.test" },
+    // { "name": "Hand", "year": 2025, "website": "https://hand.test"},
+    // [webring-health] { "name": "C", "year": 2027, "website": "https://c.test" },
+  ]
+};`;
+const b = { website: "https://b.test" };
+const c = { website: "https://c.test" };
+const prunedHtml = commentOutSites(fixture, [b]);
+check("prune drops only the failing site", "https://a.test", parseWebringData(prunedHtml).map((s) => s.website).join());
+check("removed sites are tracked, manual comments aren't", "https://b.test,https://c.test", parseRemovedSites(prunedHtml).map((s) => s.website).join());
+check("restore round-trips", true, restoreSites(prunedHtml, [b]) === fixture);
+check("restore brings back a recovered site", "https://a.test,https://b.test,https://c.test", parseWebringData(restoreSites(fixture, [c])).map((s) => s.website).join());
 
 if (failed) {
   console.error(`\n❌ ${failed} check(s) failed`);
